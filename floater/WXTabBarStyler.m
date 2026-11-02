@@ -196,7 +196,6 @@ static CGFloat gBottomGap  = 8.0;
 + (void)install {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        WXSwizzle([UITabBar class], @selector(layoutSubviews), @selector(wx_layoutSubviews));
         WXSwizzle([UITabBarController class], @selector(setSelectedIndex:), @selector(wx_setSelectedIndex:));
         WXSwizzle([UITabBar class], @selector(setSelectedItem:), @selector(wx_setSelectedItem:));
 
@@ -208,8 +207,29 @@ static CGFloat gBottomGap  = 8.0;
             UIWindow *w = UIApplication.sharedApplication.keyWindow;
             [self rescanInView:w];
         }];
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIDeviceOrientationDidChangeNotification
+                                                          object:nil queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification *n) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [self rescan]; });
+        }];
         NSLog(@"[WXFloatBar] tab bar styler installed");
     });
+}
+
++ (void)rescan {
+    if (!WXIsWeChat()) return;
+    UIWindow *w = UIApplication.sharedApplication.keyWindow;
+    if (!w) {
+        for (UIScene *sc in UIApplication.sharedApplication.connectedScenes) {
+            if (![sc isKindOfClass:UIWindowScene.class]) continue;
+            for (UIWindow *win in ((UIWindowScene *)sc).windows) {
+                if (!win.hidden) { w = win; break; }
+            }
+            if (w) break;
+        }
+    }
+    [self rescanInView:w];
 }
 
 + (void)rescanInView:(UIView *)root {
@@ -227,93 +247,104 @@ static CGFloat gBottomGap  = 8.0;
     if (!WXIsWeChat() || !tb) return;
     if (tb.bounds.size.width < 100) return;
 
-    // 防止递归：我们在 layoutSubviews 里改子视图，可能再次触发自身
+    // ---- 看门狗 ----
+    // 如果一秒内被调用超过 120 次，说明已经进入布局死循环。
+    // 立刻停止干活，避免把主线程彻底拖死。
+    static NSTimeInterval windowStart = 0;
+    static NSInteger callCount = 0;
+    NSTimeInterval now = CACurrentMediaTime();
+    if (now - windowStart > 1.0) { windowStart = now; callCount = 0; }
+    if (++callCount > 120) return;
+
     static BOOL inStyling = NO;
     if (inStyling) return;
     inStyling = YES;
-    @try {
 
-    // 1. 抹掉系统背景与分割线
     @try {
-        tb.backgroundImage = [UIImage new];
-        tb.shadowImage = [UIImage new];
-        tb.backgroundColor = UIColor.clearColor;
-        tb.translucent = YES;
-        if ([tb respondsToSelector:@selector(setBarStyle:)]) tb.barStyle = UIBarStyleDefault;
-    } @catch (NSException *e) {}
+        CGRect pill = [self pillRectFor:tb];
 
-    for (UIView *v in tb.subviews) {
-        NSString *cn = NSStringFromClass(v.class);
-        if ([cn containsString:@"BarBackground"] || [cn containsString:@"BackgroundView"]) {
-            v.hidden = YES;
+        // ================= 一次性 =================
+        // 关键：这些 UIKit setter 内部会 setNeedsLayout。
+        // 每轮布局都设一次，就会「设属性 → 重新布局 → 再设属性」无限循环 = 卡死。
+        // 所以整个生命周期里只做一次。
+        if (!objc_getAssociatedObject(tb, kWXStyledKey)) {
+            objc_setAssociatedObject(tb, kWXStyledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+            tb.backgroundImage = [UIImage new];
+            tb.shadowImage = [UIImage new];
+            tb.backgroundColor = UIColor.clearColor;
+            if (!tb.translucent) tb.translucent = YES;
+            tb.clipsToBounds = NO;
+
+            for (UIView *v in tb.subviews) {
+                NSString *cn = NSStringFromClass(v.class);
+                BOOL isBarBg = [cn containsString:@"BarBackground"] ||
+                               [cn containsString:@"BackgroundView"];
+                if (isBarBg && !v.hidden) v.hidden = YES;
+            }
+
+            tb.layer.cornerRadius = 0;
+            tb.layer.masksToBounds = NO;
         }
-    }
 
-    // 2. 玻璃底层（只建一次，复用）
-    WXGlassView *glass = objc_getAssociatedObject(tb, kWXGlassKey);
-    if (!glass) {
-        glass = [[WXGlassView alloc] initWithFrame:tb.bounds];
-        glass.userInteractionEnabled = NO;
-        glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        glass.tag = 0x57584742;
-        glass.layer.zPosition = -2;   // 永远在按钮下面
-        [tb insertSubview:glass atIndex:0];
-        objc_setAssociatedObject(tb, kWXGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // ================= 每轮 =================
+        // 只做不触发布局的操作：frame 值相同 UIKit 会自己跳过，zPosition 不影响布局
 
-        glass.style = WXGlassStyleFrost;
-        glass.tintColor = UIColor.whiteColor;
-        glass.tintAlpha = 0.14;
-        glass.edgeOpacity = 0.55;
-        glass.sheen = 1.0;
-        [glass refresh];
-    }
-    CGRect pill = [self pillRectFor:tb];
-    glass.frame = pill;
-    if (glass.superview != tb) {
-        glass.layer.zPosition = -2;
-        [tb insertSubview:glass atIndex:0];
-    }
+        WXGlassView *glass = objc_getAssociatedObject(tb, kWXGlassKey);
+        if (!glass) {
+            glass = [[WXGlassView alloc] initWithFrame:pill];
+            glass.userInteractionEnabled = NO;
+            glass.tag = 0x57584742;
+            [tb insertSubview:glass atIndex:0];
+            objc_setAssociatedObject(tb, kWXGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    // 3. 圆角（椭圆/胶囊）
-    tb.layer.cornerRadius = 0;
-    tb.layer.cornerCurve = kCACornerCurveContinuous;
-    tb.layer.masksToBounds = NO;
-    tb.clipsToBounds = NO;
-    tb.layer.shadowColor = UIColor.blackColor.CGColor;
-    tb.layer.shadowOpacity = 0.16;
-    tb.layer.shadowRadius = 18;
-    tb.layer.shadowOffset = CGSizeMake(0, 8);
+            glass.style = WXGlassStyleFrost;
+            glass.tintColor = UIColor.whiteColor;
+            glass.tintAlpha = 0.14;
+            glass.edgeOpacity = 0.55;
+            glass.sheen = 1.0;
+            [glass refresh];
+        }
+        if (glass.superview != tb) {
+            glass.layer.zPosition = -2;
+            [tb insertSubview:glass atIndex:0];
+        }
+        if (!CGRectEqualToRect(glass.frame, pill)) {
+            glass.frame = pill;
+        }
 
-    // 4. 液态指示器
-    WXLiquidIndicatorView *ind = objc_getAssociatedObject(tb, kWXIndKey);
-    CGFloat ih = MAX(26.0, pill.size.height - 10.0);
-    CGFloat iy = pill.origin.y + (pill.size.height - ih) / 2.0;
-    if (!ind) {
-        ind = [[WXLiquidIndicatorView alloc] initWithFrame:CGRectMake(0, iy, 64, ih)];
-        ind.tag = 0x57584743;
-        ind.layer.zPosition = -1;     // 玻璃之上、按钮之下
-        [tb insertSubview:ind atIndex:0];
-        objc_setAssociatedObject(tb, kWXIndKey, ind, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    CGRect f = ind.frame;
-    if (fabs(f.size.height - ih) > 0.5 || fabs(f.origin.y - iy) > 0.5) {
-        f.size.height = ih;
-        f.origin.y = iy;
-        ind.frame = f;
-        [ind applyStyle];
-    }
-    if (ind.superview != tb) {
-        ind.layer.zPosition = -1;
-        [tb insertSubview:ind atIndex:0];
-    }
+        WXLiquidIndicatorView *ind = objc_getAssociatedObject(tb, kWXIndKey);
+        CGFloat ih = MAX(26.0, pill.size.height - 10.0);
+        CGFloat iy = pill.origin.y + (pill.size.height - ih) / 2.0;
 
-    // 只在首次 / 尺寸变化时对齐位置。每次布局都对齐会把液态动画直接掐掉。
-    NSNumber *lw = objc_getAssociatedObject(tb, &kWXLastWKey);
-    if (!lw || fabs(lw.doubleValue - tb.bounds.size.width) > 0.5) {
-        objc_setAssociatedObject(tb, &kWXLastWKey, @(tb.bounds.size.width),
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [self updateIndicator:tb animated:NO];
-    }
+        if (!ind) {
+            ind = [[WXLiquidIndicatorView alloc] initWithFrame:CGRectMake(0, iy, 64, ih)];
+            ind.tag = 0x57584743;
+            ind.layer.zPosition = -1;
+            [tb insertSubview:ind atIndex:0];
+            objc_setAssociatedObject(tb, kWXIndKey, ind, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [self updateIndicator:tb animated:NO];
+        }
+        if (ind.superview != tb) {
+            ind.layer.zPosition = -1;
+            [tb insertSubview:ind atIndex:0];
+        }
+
+        CGRect f = ind.frame;
+        if (fabs(f.size.height - ih) > 0.5 || fabs(f.origin.y - iy) > 0.5) {
+            f.size.height = ih;
+            f.origin.y = iy;
+            ind.frame = f;
+            [ind applyStyle];
+        }
+
+        // 只在宽度变化（首次 / 旋转）时重新对齐，避免掐掉液态动画
+        NSNumber *lw = objc_getAssociatedObject(tb, &kWXLastWKey);
+        if (!lw || fabs(lw.doubleValue - tb.bounds.size.width) > 0.5) {
+            objc_setAssociatedObject(tb, &kWXLastWKey, @(tb.bounds.size.width),
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [self updateIndicator:tb animated:NO];
+        }
     } @catch (NSException *e) {
         NSLog(@"[WXFloatBar] style error: %@", e);
     }
@@ -376,16 +407,10 @@ static CGFloat gBottomGap  = 8.0;
 #pragma mark - Hook：UITabBar
 
 @interface UITabBar (WXHook)
-- (void)wx_layoutSubviews;
 - (void)wx_setSelectedItem:(UITabBarItem *)item;
 @end
 
 @implementation UITabBar (WXHook)
-
-- (void)wx_layoutSubviews {
-    [self wx_layoutSubviews];          // 原实现
-    [WXTabBarStyler styleTabBar:self];
-}
 
 - (void)wx_setSelectedItem:(UITabBarItem *)item {
     [self wx_setSelectedItem:item];    // 原实现
