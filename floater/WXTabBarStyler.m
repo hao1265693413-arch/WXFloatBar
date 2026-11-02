@@ -116,8 +116,8 @@ static NSArray<UIView *> *WXTabButtons(UITabBar *tb) {
 }
 
 - (void)moveToCenterX:(CGFloat)x width:(CGFloat)w animated:(BOOL)animated {
-    CGFloat h = self.bounds.size.height;
-    CGRect target = CGRectMake(x - w / 2.0, (self.superview.bounds.size.height - h) / 2.0, w, h);
+    CGRect cur = self.frame;
+    CGRect target = CGRectMake(x - w / 2.0, cur.origin.y, w, cur.size.height);
 
     if (!animated) {
         self.frame = target;
@@ -197,7 +197,6 @@ static CGFloat gBottomGap  = 8.0;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         WXSwizzle([UITabBar class], @selector(layoutSubviews), @selector(wx_layoutSubviews));
-        WXSwizzle([UITabBarController class], @selector(viewDidLayoutSubviews), @selector(wx_viewDidLayoutSubviews));
         WXSwizzle([UITabBarController class], @selector(setSelectedIndex:), @selector(wx_setSelectedIndex:));
         WXSwizzle([UITabBar class], @selector(setSelectedItem:), @selector(wx_setSelectedItem:));
 
@@ -228,6 +227,12 @@ static CGFloat gBottomGap  = 8.0;
     if (!WXIsWeChat() || !tb) return;
     if (tb.bounds.size.width < 100) return;
 
+    // 防止递归：我们在 layoutSubviews 里改子视图，可能再次触发自身
+    static BOOL inStyling = NO;
+    if (inStyling) return;
+    inStyling = YES;
+    @try {
+
     // 1. 抹掉系统背景与分割线
     @try {
         tb.backgroundImage = [UIImage new];
@@ -251,6 +256,7 @@ static CGFloat gBottomGap  = 8.0;
         glass.userInteractionEnabled = NO;
         glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         glass.tag = 0x57584742;
+        glass.layer.zPosition = -2;   // 永远在按钮下面
         [tb insertSubview:glass atIndex:0];
         objc_setAssociatedObject(tb, kWXGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
@@ -261,13 +267,15 @@ static CGFloat gBottomGap  = 8.0;
         glass.sheen = 1.0;
         [glass refresh];
     }
-    glass.frame = tb.bounds;
-    if (glass.superview != tb || [tb.subviews indexOfObject:glass] != 0) {
+    CGRect pill = [self pillRectFor:tb];
+    glass.frame = pill;
+    if (glass.superview != tb) {
+        glass.layer.zPosition = -2;
         [tb insertSubview:glass atIndex:0];
     }
 
     // 3. 圆角（椭圆/胶囊）
-    tb.layer.cornerRadius = tb.bounds.size.height / 2.0;
+    tb.layer.cornerRadius = 0;
     tb.layer.cornerCurve = kCACornerCurveContinuous;
     tb.layer.masksToBounds = NO;
     tb.clipsToBounds = NO;
@@ -278,27 +286,25 @@ static CGFloat gBottomGap  = 8.0;
 
     // 4. 液态指示器
     WXLiquidIndicatorView *ind = objc_getAssociatedObject(tb, kWXIndKey);
+    CGFloat ih = MAX(26.0, pill.size.height - 10.0);
+    CGFloat iy = pill.origin.y + (pill.size.height - ih) / 2.0;
     if (!ind) {
-        CGFloat ih = MAX(28.0, tb.bounds.size.height - 14.0);
-        ind = [[WXLiquidIndicatorView alloc] initWithFrame:CGRectMake(0, 0, 64, ih)];
+        ind = [[WXLiquidIndicatorView alloc] initWithFrame:CGRectMake(0, iy, 64, ih)];
         ind.tag = 0x57584743;
-        [tb insertSubview:ind atIndex:1];
+        ind.layer.zPosition = -1;     // 玻璃之上、按钮之下
+        [tb insertSubview:ind atIndex:0];
         objc_setAssociatedObject(tb, kWXIndKey, ind, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    CGFloat ih = MAX(28.0, tb.bounds.size.height - 14.0);
     CGRect f = ind.frame;
-    if (fabs(f.size.height - ih) > 0.5) {
+    if (fabs(f.size.height - ih) > 0.5 || fabs(f.origin.y - iy) > 0.5) {
         f.size.height = ih;
-        f.origin.y = (tb.bounds.size.height - ih) / 2.0;
+        f.origin.y = iy;
         ind.frame = f;
         [ind applyStyle];
     }
     if (ind.superview != tb) {
-        [tb addSubview:ind];
-    }
-    NSUInteger idx = [tb.subviews indexOfObject:ind];
-    if (idx != NSNotFound && idx > 1 && tb.subviews.count >= 2) {
-        [tb insertSubview:ind atIndex:1];
+        ind.layer.zPosition = -1;
+        [tb insertSubview:ind atIndex:0];
     }
 
     // 只在首次 / 尺寸变化时对齐位置。每次布局都对齐会把液态动画直接掐掉。
@@ -308,28 +314,30 @@ static CGFloat gBottomGap  = 8.0;
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [self updateIndicator:tb animated:NO];
     }
+    } @catch (NSException *e) {
+        NSLog(@"[WXFloatBar] style error: %@", e);
+    }
+    inStyling = NO;
 }
 
 #pragma mark 悬浮位置
 
-+ (void)floatTabBar:(UITabBar *)tb inController:(UITabBarController *)vc {
-    if (!WXIsWeChat() || !tb || !vc) return;
-    if (!gFloating) return;
+/// 计算胶囊在 tab bar 内部的位置（不改变 tab bar 自身的 frame）
+/// 这是关键：绝不能在布局回调里改 tab bar 的 frame，
+/// UITabBarController 每轮布局都会重置它，会形成无限布局循环 -> 主线程卡死。
++ (CGRect)pillRectFor:(UITabBar *)tb {
+    CGRect b = tb.bounds;
+    if (b.size.width < 100) return CGRectZero;
 
-    UIView *root = vc.view;
-    CGRect b = root.bounds;
-    if (b.size.width < 100 || b.size.height < 200) return;
+    CGFloat safe = 0;
+    if (@available(iOS 11.0, *)) safe = tb.safeAreaInsets.bottom;
 
-    CGFloat safeBottom = root.safeAreaInsets.bottom;
-    CGFloat h = gBarHeight;
+    CGFloat available = b.size.height - safe;
+    CGFloat h = MIN(50.0, available - 4.0);
+    if (h < 30.0) h = MIN(50.0, b.size.height);
+
     CGFloat w = b.size.width - gHMargin * 2.0;
-    CGFloat x = gHMargin;
-    CGFloat y = b.size.height - safeBottom - h - gBottomGap;
-
-    CGRect target = CGRectMake(x, y, w, h);
-    if (!CGRectEqualToRect(tb.frame, target)) {
-        tb.frame = target;
-    }
+    return CGRectMake(gHMargin, 2.0, w, h);
 }
 
 #pragma mark 指示器
@@ -389,16 +397,10 @@ static CGFloat gBottomGap  = 8.0;
 #pragma mark - Hook：UITabBarController
 
 @interface UITabBarController (WXHook)
-- (void)wx_viewDidLayoutSubviews;
 - (void)wx_setSelectedIndex:(NSUInteger)index;
 @end
 
 @implementation UITabBarController (WXHook)
-
-- (void)wx_viewDidLayoutSubviews {
-    [self wx_viewDidLayoutSubviews];   // 原实现
-    [WXTabBarStyler floatTabBar:self.tabBar inController:self];
-}
 
 - (void)wx_setSelectedIndex:(NSUInteger)index {
     [self wx_setSelectedIndex:index];  // 原实现
