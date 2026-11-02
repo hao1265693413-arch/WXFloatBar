@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WXFloatBar 效果预览</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+    background:#1c1c1e;
+    display:flex; align-items:center; justify-content:center;
+    min-height:100vh; padding:20px;
+  }
+
+  /* iPhone 14 Pro Max 逻辑分辨率 430x932 */
+  .phone {
+    width:430px; height:932px; position:relative; overflow:hidden;
+    background:#ededed; border-radius:54px;
+    box-shadow:0 30px 80px rgba(0,0,0,.6), 0 0 0 10px #2a2a2c, 0 0 0 12px #3a3a3c;
+  }
+
+  /* ===== 动态岛 ===== */
+  .island {
+    position:absolute; top:12px; left:50%; transform:translateX(-50%);
+    width:126px; height:37px; background:#000; border-radius:20px; z-index:100;
+  }
+
+  /* ===== 导航栏 ===== */
+  .navbar {
+    position:absolute; top:0; left:0; right:0; height:100px;
+    background:#ededed; display:flex; align-items:flex-end;
+    padding:0 16px 12px; z-index:50;
+  }
+  .navbar .back { color:#181818; font-size:22px; margin-right:12px; }
+  .navbar .title { font-size:17px; font-weight:600; color:#181818; flex:1; text-align:center; margin-right:22px; }
+
+  /* ===== 聊天区 ===== */
+  .chat {
+    position:absolute; top:100px; bottom:130px; left:0; right:0;
+    padding:16px 14px; display:flex; flex-direction:column; gap:14px;
+    overflow:hidden;
+  }
+  .row { display:flex; gap:9px; align-items:flex-start; }
+  .row.me { flex-direction:row-reverse; }
+  .avatar {
+    width:38px; height:38px; border-radius:6px; flex:0 0 38px;
+    background:linear-gradient(135deg,#6ec6ff,#2f7fe0);
+  }
+  .row.me .avatar { background:linear-gradient(135deg,#8adf9a,#2aa845); }
+  .bubble {
+    max-width:66%; padding:10px 13px; border-radius:8px;
+    background:#fff; font-size:15px; line-height:1.45; color:#1a1a1a;
+    box-shadow:0 1px 1px rgba(0,0,0,.04);
+  }
+  .row.me .bubble { background:#95ec69; }
+  .img-msg {
+    width:150px; height:112px; border-radius:8px;
+    background:linear-gradient(140deg,#ffb36b,#ff7a59 55%,#e8523f);
+    box-shadow:0 1px 2px rgba(0,0,0,.12);
+  }
+  .time { text-align:center; font-size:12px; color:#9a9a9a; margin:4px 0; }
+
+  /* ===== 悬浮液态玻璃胶囊 ===== */
+  .floatbar {
+    position:absolute; left:55px; bottom:232px;
+    width:320px; height:58px; border-radius:29px; z-index:80;
+
+    /* 真实毛玻璃 */
+    backdrop-filter:blur(22px) saturate(180%);
+    -webkit-backdrop-filter:blur(22px) saturate(180%);
+
+    background:linear-gradient(135deg,
+      rgba(255,255,255,0.42) 0%,
+      rgba(255,255,255,0.12) 46%,
+      rgba(255,255,255,0.30) 100%);
+
+    /* 高光描边 + 投影 */
+    border:0.8px solid rgba(255,255,255,0.62);
+    box-shadow:
+      0 10px 30px rgba(0,0,0,0.16),
+      0 2px 6px rgba(0,0,0,0.08),
+      inset 0 1px 0 rgba(255,255,255,0.92),
+      inset 0 -1px 0 rgba(255,255,255,0.30),
+      inset 0 0 24px rgba(255,255,255,0.10);
+
+    display:flex; align-items:center;
+    padding:0 4px;
+  }
+
+  /* 顶部镜面高光条 */
+  .floatbar::before {
+    content:""; position:absolute; top:1.5px; left:18%; right:18%;
+    height:1.2px; border-radius:1px;
+    background:linear-gradient(90deg,
+      rgba(255,255,255,0) 0%,
+      rgba(255,255,255,0.95) 35%,
+      rgba(255,255,255,0.95) 65%,
+      rgba(255,255,255,0) 100%);
+    pointer-events:none;
+  }
+
+  /* 液态追踪光团 */
+  .liquid {
+    position:absolute; width:86px; height:86px; border-radius:50%;
+    left:120px; top:50%; transform:translate(-50%,-50%);
+    background:radial-gradient(circle,
+      rgba(255,255,255,0.55) 0%,
+      rgba(255,255,255,0.22) 45%,
+      rgba(255,255,255,0) 72%);
+    filter:blur(1px);
+    pointer-events:none;
+    animation:drift 4.5s ease-in-out infinite;
+  }
+  @keyframes drift {
+    0%,100% { left:26%; opacity:.55; }
+    35%     { left:52%; opacity:.95; }
+    65%     { left:74%; opacity:.70; }
+  }
+
+  .item {
+    flex:1; height:50px; border-radius:25px;
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:3px;
+    position:relative; z-index:2;
+  }
+  .item svg { width:19px; height:19px; stroke:#141414; stroke-width:1.9;
+              fill:none; stroke-linecap:round; stroke-linejoin:round; opacity:.88; }
+  .item span { font-size:10.5px; color:#141414; opacity:.86; font-weight:500; letter-spacing:.2px; }
+
+  /* 分隔细线 */
+  .divider {
+    position:absolute; top:14px; bottom:14px; width:0.6px;
+    background:linear-gradient(180deg,
+      rgba(0,0,0,0) 0%, rgba(0,0,0,0.07) 50%, rgba(0,0,0,0) 100%);
+    z-index:1;
+  }
+
+  /* ===== 输入栏 ===== */
+  .inputbar {
+    position:absolute; bottom:0; left:0; right:0; height:130px;
+    background:#f7f7f7; display:flex; align-items:flex-start;
+    padding:12px 12px 0; gap:10px; border-top:0.5px solid #d8d8d8;
+  }
+  .inputbar .circle {
+    width:34px; height:34px; border-radius:50%; background:#fff;
+    border:0.8px solid #dcdcdc; display:flex; align-items:center; justify-content:center;
+    font-size:19px; color:#555;
+  }
+  .inputbar .field {
+    flex:1; height:34px; background:#fff; border-radius:5px;
+    border:0.8px solid #dcdcdc;
+  }
+
+  .badge {
+    position:absolute; top:14px; right:16px; z-index:110;
+    background:rgba(0,0,0,.72); color:#fff; font-size:11px;
+    padding:5px 10px; border-radius:20px; backdrop-filter:blur(8px);
+  }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="island"></div>
+  <div class="badge">效果预览</div>
+
+  <div class="navbar">
+    <div class="back">‹</div>
+    <div class="title">小明</div>
+  </div>
+
+  <div class="chat">
+    <div class="time">下午 3:24</div>
+
+    <div class="row">
+      <div class="avatar"></div>
+      <div class="bubble">你昨天发的那个视频能再发一次吗</div>
+    </div>
+
+    <div class="row me">
+      <div class="avatar"></div>
+      <div class="bubble">可以啊，等下我找找</div>
+    </div>
+
+    <div class="row me">
+      <div class="avatar"></div>
+      <div class="img-msg"></div>
+    </div>
+
+    <div class="row">
+      <div class="avatar"></div>
+      <div class="bubble">收到！这个挺好看的</div>
+    </div>
+
+    <div class="time">下午 3:41</div>
+
+    <div class="row">
+      <div class="avatar"></div>
+      <div class="bubble">对了你那个悬浮条用的什么插件</div>
+    </div>
+
+    <div class="row me">
+      <div class="avatar"></div>
+      <div class="bubble">自己写的，液态玻璃效果</div>
+    </div>
+
+    <div class="row">
+      <div class="avatar"></div>
+      <div class="img-msg" style="background:linear-gradient(140deg,#7fd8ff,#4a9fe8 55%,#3a6fd8)"></div>
+    </div>
+
+    <div class="row">
+      <div class="avatar"></div>
+      <div class="bubble">牛啊，看着跟系统自带的一样</div>
+    </div>
+
+    <div class="row me">
+      <div class="avatar"></div>
+      <div class="bubble">还在写，等下发你</div>
+    </div>
+
+    <div class="row">
+      <div class="avatar"></div>
+      <div class="bubble">好，蹲一个</div>
+    </div>
+  </div>
+
+  <!-- 悬浮液态玻璃胶囊 -->
+  <div class="floatbar">
+    <div class="liquid"></div>
+
+    <div class="item">
+      <svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>
+      <span>分享</span>
+    </div>
+    <div class="divider" style="left:25%"></div>
+
+    <div class="item">
+      <svg viewBox="0 0 24 24"><path d="M12 15V3"/><path d="M8 11l4 4 4-4"/><path d="M4 19h16"/></svg>
+      <span>保存</span>
+    </div>
+    <div class="divider" style="left:50%"></div>
+
+    <div class="item">
+      <svg viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="2.5"/><path d="M16 8V5.5A2.5 2.5 0 0 0 13.5 3H5.5A2.5 2.5 0 0 0 3 5.5v8A2.5 2.5 0 0 0 5.5 16H8"/></svg>
+      <span>复制</span>
+    </div>
+    <div class="divider" style="left:75%"></div>
+
+    <div class="item">
+      <svg viewBox="0 0 24 24"><path d="M13 2L4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5z"/></svg>
+      <span>快捷</span>
+    </div>
+  </div>
+
+  <div class="inputbar">
+    <div class="circle">＋</div>
+    <div class="field"></div>
+    <div class="circle">◎</div>
+  </div>
+</div>
+</body>
+</html>
