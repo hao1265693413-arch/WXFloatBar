@@ -5,7 +5,7 @@ set -euo pipefail
 PROJ="$(cd "$(dirname "$0")" && pwd)"
 OUT="$PROJ/build"
 NAME="WXFloatBar"
-VERSION="2.0.2"
+VERSION="2.1.0"
 
 rm -rf "$OUT"; mkdir -p "$OUT"
 
@@ -14,13 +14,15 @@ echo "==> SDK: $SDK"
 
 SRC=("$PROJ/floater/WXGlassView.m"
      "$PROJ/floater/WXTabBarStyler.m"
+     "$PROJ/floater/WXSettingsController.m"
+     "$PROJ/floater/WXPrefs.m"
      "$PROJ/floater/WXInjector.m")
 
 COMMON=(-isysroot "$SDK" -miphoneos-version-min=15.0
         -dynamiclib -fobjc-arc -O2
         -I"$PROJ/floater"
         -framework UIKit -framework QuartzCore
-        -framework CoreGraphics -framework Foundation
+        -framework CoreGraphics -framework Foundation -framework PhotosUI
         -Wno-deprecated-declarations -Wno-nullability-completeness
         -install_name /usr/lib/TweakInject/$NAME.dylib)
 
