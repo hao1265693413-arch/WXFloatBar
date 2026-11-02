@@ -60,14 +60,15 @@ static UITabBarController *WXFindTBC(UIViewController *vc) {
     return nil;
 }
 
-/// 主动触发一次布局，让 swizzle 有机会跑
+/// 先强制一次布局让 bounds 有效，再主动扫描上样式
+/// （不依赖 layoutSubviews 钩子，从根上避免布局死循环）
 static void WXNudge(void) {
     UITabBarController *tbc = WXFindTabBarController();
-    if (!tbc) return;
-    [tbc.view setNeedsLayout];
-    [tbc.view layoutIfNeeded];
-    [tbc.tabBar setNeedsLayout];
-    [tbc.tabBar layoutIfNeeded];
+    if (tbc) {
+        [tbc.view setNeedsLayout];
+        [tbc.view layoutIfNeeded];
+    }
+    [WXTabBarStyler rescan];
 }
 
 /// 加载确认提示（用来判断 dylib 到底有没有被加载）
