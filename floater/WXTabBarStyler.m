@@ -151,7 +151,7 @@ static NSArray<UIView *> *WXTabButtons(UITabBar *tb) {
 
     // 高光扫过
     CALayer *shine = [CALayer layer];
-    shine.frame = CGRectMake(-w * 0.5, 0, w * 0.5, h);
+    shine.frame = CGRectMake(-w * 0.5, 0, w * 0.5, cur.size.height);
     shine.backgroundColor = [UIColor colorWithWhite:1 alpha:0.28].CGColor;
     shine.opacity = 0;
     [self.layer addSublayer:shine];
