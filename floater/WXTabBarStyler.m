@@ -4,6 +4,8 @@
 
 #import "WXTabBarStyler.h"
 #import "WXGlassView.h"
+#import "WXPrefs.h"
+#import "WXSettingsController.h"
 #import <objc/runtime.h>
 #import <QuartzCore/QuartzCore.h>
 
@@ -49,6 +51,40 @@ static void WXCollectTabButtons(UIView *v, NSMutableArray<UIView *> *out) {
             WXCollectTabButtons(s, out);
         }
     }
+}
+
+/// 递归隐藏 tab bar 的所有背景层（跳过我们自己的玻璃/指示器）
+static void WXHideBackgrounds(UIView *v) {
+    for (UIView *s in v.subviews) {
+        if (s.tag == 0x57584742 || s.tag == 0x57584743) continue;  // 我们的视图
+        if (s.tag == 0x57584744) continue;
+        NSString *cn = NSStringFromClass(s.class);
+
+        BOOL isBg = [cn containsString:@"BarBackground"] ||
+                    [cn containsString:@"BackgroundView"] ||
+                    [cn containsString:@"Background"] ||
+                    [cn containsString:@"Separator"] ||
+                    [cn containsString:@"Shadow"];
+        if (isBg) {
+            if (!s.hidden) s.hidden = YES;
+            s.backgroundColor = UIColor.clearColor;
+            s.alpha = 0.0;
+            s.layer.backgroundColor = UIColor.clearColor.CGColor;
+        }
+        WXHideBackgrounds(s);
+    }
+}
+
+static UIImage *WXCircularImage(UIImage *img, CGFloat size) {
+    if (!img) return nil;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(size, size), NO, 0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    CGContextAddEllipseInRect(ctx, CGRectMake(0, 0, size, size));
+    CGContextClip(ctx);
+    [img drawInRect:CGRectMake(0, 0, size, size)];
+    UIImage *out = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return [out imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
 }
 
 static NSArray<UIView *> *WXTabButtons(UITabBar *tb) {
@@ -236,6 +272,7 @@ static CGFloat gBottomGap  = 8.0;
     if (!root) return;
     if ([root isKindOfClass:UITabBar.class]) {
         [self styleTabBar:(UITabBar *)root];
+        [WXSettingsController installLongPressOnView:root];
         return;
     }
     for (UIView *s in root.subviews) [self rescanInView:s];
@@ -276,13 +313,10 @@ static CGFloat gBottomGap  = 8.0;
             if (!tb.translucent) tb.translucent = YES;
             tb.clipsToBounds = NO;
 
-            for (UIView *v in tb.subviews) {
-                NSString *cn = NSStringFromClass(v.class);
-                BOOL isBarBg = [cn containsString:@"BarBackground"] ||
-                               [cn containsString:@"BackgroundView"];
-                if (isBarBg && !v.hidden) v.hidden = YES;
-            }
+            WXHideBackgrounds(tb);
 
+            tb.opaque = NO;
+            tb.layer.backgroundColor = UIColor.clearColor.CGColor;
             tb.layer.cornerRadius = 0;
             tb.layer.masksToBounds = NO;
         }
@@ -300,7 +334,7 @@ static CGFloat gBottomGap  = 8.0;
 
             glass.style = WXGlassStyleFrost;
             glass.tintColor = UIColor.whiteColor;
-            glass.tintAlpha = 0.14;
+            glass.tintAlpha = WXPrefFloat(kWXPrefTintAlpha, 0.14);
             glass.edgeOpacity = 0.55;
             glass.sheen = 1.0;
             [glass refresh];
@@ -345,6 +379,25 @@ static CGFloat gBottomGap  = 8.0;
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             [self updateIndicator:tb animated:NO];
         }
+
+        // 玻璃浓度跟随设置
+        CGFloat ta = WXPrefFloat(kWXPrefTintAlpha, 0.14);
+        if (fabs(glass.tintAlpha - ta) > 0.001) {
+            glass.tintAlpha = ta;   // setter 内部会 refresh
+        }
+
+        // 文字显隐
+        BOOL showLabels = WXPrefBool(kWXPrefShowLabels, YES);
+        for (UIView *btn in WXTabButtons(tb)) {
+            for (UIView *sub in btn.subviews) {
+                if ([sub isKindOfClass:UILabel.class]) {
+                    if (sub.hidden == showLabels) sub.hidden = !showLabels;
+                }
+            }
+        }
+
+        // 头像
+        [self applyAvatarTo:tb];
     } @catch (NSException *e) {
         NSLog(@"[WXFloatBar] style error: %@", e);
     }
@@ -360,18 +413,44 @@ static CGFloat gBottomGap  = 8.0;
     CGRect b = tb.bounds;
     if (b.size.width < 100) return CGRectZero;
 
+    CGFloat margin = WXPrefFloat(kWXPrefMargin, 8.0);
+    CGFloat wantH  = WXPrefFloat(kWXPrefHeight, 58.0);
+
     CGFloat safe = 0;
     if (@available(iOS 11.0, *)) safe = tb.safeAreaInsets.bottom;
 
     CGFloat available = b.size.height - safe;
-    CGFloat h = MIN(50.0, available - 4.0);
-    if (h < 30.0) h = MIN(50.0, b.size.height);
+    CGFloat h = MIN(wantH, available - 4.0);
+    if (h < 30.0) h = MIN(wantH, b.size.height);
 
-    CGFloat w = b.size.width - gHMargin * 2.0;
-    return CGRectMake(gHMargin, 2.0, w, h);
+    CGFloat w = b.size.width - margin * 2.0;
+    return CGRectMake(margin, 2.0, w, h);
 }
 
 #pragma mark 指示器
+
++ (void)applyAvatarTo:(UITabBar *)tb {
+    NSString *path = WXPrefString(kWXPrefAvatar, nil);
+    if (path.length == 0) return;
+    UIImage *img = [UIImage imageWithContentsOfFile:path];
+    if (!img) return;
+
+    NSArray<UIView *> *btns = WXTabButtons(tb);
+    if (btns.count < 4) return;
+    UIView *meBtn = btns.lastObject;   // 微信「我」是第 4 个
+
+    UIImageView *iv = nil;
+    for (UIView *sub in meBtn.subviews) {
+        if ([sub isKindOfClass:UIImageView.class]) { iv = (UIImageView *)sub; break; }
+    }
+    if (!iv) return;
+
+    UIImage *circle = WXCircularImage(img, 25.0);
+    if (circle && iv.image != circle) {
+        iv.image = circle;
+        iv.contentMode = UIViewContentModeScaleAspectFit;
+    }
+}
 
 + (void)updateIndicator:(UITabBar *)tb animated:(BOOL)animated {
     if (!tb) return;
