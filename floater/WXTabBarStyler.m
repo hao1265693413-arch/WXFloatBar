@@ -15,6 +15,8 @@ static const void *kWXGlassKey  = &kWXGlassKey;
 static const void *kWXIndKey    = &kWXIndKey;
 static const void *kWXStyledKey = &kWXStyledKey;
 static const void *kWXLastWKey  = &kWXLastWKey;
+static const void *kWXCapsuleKey = &kWXCapsuleKey;
+static const NSInteger kWXCapsuleTag = 0x57584745;
 
 static BOOL WXIsWeChat(void) {
     NSString *b = [NSBundle mainBundle].bundleIdentifier ?: @"";
@@ -321,9 +323,7 @@ static UITabBarItem *gPollLast = nil;
     if (!WXIsWeChat() || !tb) return;
     if (tb.bounds.size.width < 100) return;
 
-    // ---- 看门狗 ----
-    // 如果一秒内被调用超过 120 次，说明已经进入布局死循环。
-    // 立刻停止干活，避免把主线程彻底拖死。
+    // 看门狗：一秒内超过 120 次说明进了布局循环，立刻停手
     static NSTimeInterval windowStart = 0;
     static NSInteger callCount = 0;
     NSTimeInterval now = CACurrentMediaTime();
@@ -337,15 +337,11 @@ static UITabBarItem *gPollLast = nil;
     @try {
         CGRect pill = [self pillRectFor:tb];
 
-        // ================= 一次性 =================
-        // 关键：这些 UIKit setter 内部会 setNeedsLayout。
-        // 每轮布局都设一次，就会「设属性 → 重新布局 → 再设属性」无限循环 = 卡死。
-        // 所以整个生命周期里只做一次。
+        // ---------- 一次性：抹掉系统背景 ----------
         if (!objc_getAssociatedObject(tb, kWXStyledKey)) {
             objc_setAssociatedObject(tb, kWXStyledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-            // iOS 15+ 上 backgroundImage / shadowImage 已经失效，
-            // 必须用 UITabBarAppearance 才能真正清掉背景
+            // iOS 15+ 只有 UITabBarAppearance 有效
             if (@available(iOS 13.0, *)) {
                 UITabBarAppearance *ap = [UITabBarAppearance new];
                 [ap configureWithTransparentBackground];
@@ -355,109 +351,131 @@ static UITabBarItem *gPollLast = nil;
                 ap.shadowImage = [UIImage new];
                 ap.backgroundImage = [UIImage new];
                 tb.standardAppearance = ap;
-                if (@available(iOS 15.0, *)) {
-                    tb.scrollEdgeAppearance = ap;
-                }
+                if (@available(iOS 15.0, *)) tb.scrollEdgeAppearance = ap;
             }
             tb.backgroundImage = [UIImage new];
             tb.shadowImage = [UIImage new];
             tb.backgroundColor = UIColor.clearColor;
-            if (!tb.translucent) tb.translucent = YES;
-            tb.clipsToBounds = NO;
-
             tb.opaque = NO;
             tb.layer.backgroundColor = UIColor.clearColor.CGColor;
-            tb.layer.cornerRadius = 0;
-            tb.layer.masksToBounds = NO;
+            tb.clipsToBounds = NO;
         }
 
-        // 背景层可能在首次之后才创建，所以每轮都扫一次（隐藏不会触发布局）
-        WXHideBackgrounds(tb);
-
-        // ================= 每轮 =================
-        // 只做不触发布局的操作：frame 值相同 UIKit 会自己跳过，zPosition 不影响布局
-
-        WXGlassView *glass = objc_getAssociatedObject(tb, kWXGlassKey);
-        if (!glass) {
-            glass = [[WXGlassView alloc] initWithFrame:pill];
-            glass.userInteractionEnabled = NO;
-            glass.tag = 0x57584742;
-            [tb insertSubview:glass atIndex:0];
-            objc_setAssociatedObject(tb, kWXGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-            glass.style = WXGlassStyleFrost;
-            glass.tintColor = UIColor.whiteColor;
-            glass.tintAlpha = WXPrefFloat(kWXPrefTintAlpha, 0.14);
-            glass.edgeOpacity = 0.55;
-            glass.sheen = 1.0;
-            [glass refresh];
-        }
-        if (glass.superview != tb) {
-            glass.layer.zPosition = -2;
-            [tb insertSubview:glass atIndex:0];
-        }
-        if (!CGRectEqualToRect(glass.frame, pill)) {
-            glass.frame = pill;
+        // ---------- 每轮：隐藏微信自己的全部子视图 ----------
+        // 原生按钮按整条 tab bar（含底部安全区）排版，图标会落在胶囊里、
+        // 文字却掉到胶囊外面，所以干脆全部隐藏，自己在胶囊里画一套。
+        for (UIView *v in tb.subviews) {
+            if (v.tag == kWXCapsuleTag) continue;
+            if (!v.hidden) v.hidden = YES;
+            if (v.alpha > 0.01) v.alpha = 0.0;
         }
 
-        WXLiquidIndicatorView *ind = objc_getAssociatedObject(tb, kWXIndKey);
-        CGFloat ih = MAX(26.0, pill.size.height - 10.0);
-        CGFloat iy = pill.origin.y + (pill.size.height - ih) / 2.0;
+        // ---------- 自绘胶囊 ----------
+        WXCapsuleBar *cap = objc_getAssociatedObject(tb, kWXCapsuleKey);
+        if (!cap) {
+            NSArray *items = @[
+                @{@"icon": @"message.fill",                    @"title": @"微信"},
+                @{@"icon": @"person.text.rectangle.fill",      @"title": @"通讯录"},
+                @{@"icon": @"safari.fill",                     @"title": @"发现"},
+                @{@"icon": @"person.fill",                     @"title": @"我"},
+            ];
+            cap = [[WXCapsuleBar alloc] initWithItems:items size:pill.size];
+            cap.tag = kWXCapsuleTag;
+            cap.layer.zPosition = 10;
+            cap.backgroundColor = UIColor.clearColor;
 
-        if (!ind) {
-            ind = [[WXLiquidIndicatorView alloc] initWithFrame:CGRectMake(0, iy, 64, ih)];
+            __weak UITabBar *weakTB = tb;
+            cap.onTap = ^(NSInteger idx, UIButton *b) {
+                [WXTabBarStyler selectIndex:idx inTabBar:weakTB];
+            };
+            [tb addSubview:cap];
+            objc_setAssociatedObject(tb, kWXCapsuleKey, cap, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+            cap.glass.style = WXGlassStyleFrost;
+            cap.glass.tintColor = UIColor.whiteColor;
+            cap.glass.tintAlpha = WXPrefFloat(kWXPrefTintAlpha, 0.14);
+            cap.glass.edgeOpacity = 0.60;
+            cap.glass.sheen = 1.0;
+            [cap.glass refresh];
+
+            // 选中指示器：放在胶囊里，玻璃之上、按钮之下
+            WXLiquidIndicatorView *ind =
+                [[WXLiquidIndicatorView alloc] initWithFrame:CGRectMake(0, 4, 64, pill.size.height - 8)];
             ind.tag = 0x57584743;
-            ind.layer.zPosition = -1;
-            [tb insertSubview:ind atIndex:0];
+            [cap insertSubview:ind atIndex:1];
             objc_setAssociatedObject(tb, kWXIndKey, ind, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
             [self updateIndicator:tb animated:NO];
         }
-        if (ind.superview != tb) {
-            ind.layer.zPosition = -1;
-            [tb insertSubview:ind atIndex:0];
-        }
 
-        CGRect f = ind.frame;
-        if (fabs(f.size.height - ih) > 0.5 || fabs(f.origin.y - iy) > 0.5) {
-            f.size.height = ih;
-            f.origin.y = iy;
-            ind.frame = f;
-            [ind applyStyle];
+        if (cap.superview != tb) {
+            cap.layer.zPosition = 10;
+            [tb addSubview:cap];
         }
-
-        // 只在宽度变化（首次 / 旋转）时重新对齐，避免掐掉液态动画
-        NSNumber *lw = objc_getAssociatedObject(tb, &kWXLastWKey);
-        if (!lw || fabs(lw.doubleValue - tb.bounds.size.width) > 0.5) {
-            objc_setAssociatedObject(tb, &kWXLastWKey, @(tb.bounds.size.width),
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [self updateIndicator:tb animated:NO];
+        if (!CGRectEqualToRect(cap.frame, pill)) {
+            cap.frame = pill;
         }
 
         // 玻璃浓度跟随设置
         CGFloat ta = WXPrefFloat(kWXPrefTintAlpha, 0.14);
-        if (fabs(glass.tintAlpha - ta) > 0.001) {
-            glass.tintAlpha = ta;   // setter 内部会 refresh
+        if (fabs(cap.glass.tintAlpha - ta) > 0.001) {
+            cap.glass.tintAlpha = ta;
         }
 
         // 文字显隐
-        BOOL showLabels = WXPrefBool(kWXPrefShowLabels, YES);
-        for (UIView *btn in WXTabButtons(tb)) {
-            for (UIView *sub in btn.subviews) {
-                if ([sub isKindOfClass:UILabel.class]) {
-                    if (sub.hidden == showLabels) sub.hidden = !showLabels;
-                }
-            }
-        }
+        [cap setShowsTitles:WXPrefBool(kWXPrefShowLabels, YES)];
 
         // 头像
         [self applyAvatarTo:tb];
 
-        // 选中项轮询（保证指示器能动）
+        // 选中项轮询
         [self startSelectionPolling:tb];
+
     } @catch (NSException *e) {
         NSLog(@"[WXFloatBar] style error: %@", e);
     }
     inStyling = NO;
+}
+
+#pragma mark 切换 tab
+
++ (NSInteger)selectedIndexFor:(UITabBar *)tb {
+    UIResponder *r = tb;
+    while (r && ![r isKindOfClass:UITabBarController.class]) r = r.nextResponder;
+    if ([r isKindOfClass:UITabBarController.class]) {
+        return (NSInteger)((UITabBarController *)r).selectedIndex;
+    }
+    UITabBarItem *item = tb.selectedItem;
+    if (item) {
+        NSUInteger i = [tb.items indexOfObject:item];
+        if (i != NSNotFound) return (NSInteger)i;
+    }
+    return 0;
+}
+
++ (void)selectIndex:(NSInteger)idx inTabBar:(UITabBar *)tb {
+    if (!tb || idx < 0 || idx >= (NSInteger)tb.items.count) return;
+
+    UITabBarItem *item = tb.items[idx];
+
+    // 1. 走 delegate（标准 UITabBar 的切页入口）
+    id<UITabBarDelegate> d = tb.delegate;
+    if (d && [d respondsToSelector:@selector(tabBar:didSelectItem:)]) {
+        [d tabBar:tb didSelectItem:item];
+    }
+
+    // 2. 同步 selectedItem
+    if (tb.selectedItem != item) tb.selectedItem = item;
+
+    // 3. 如果是标准 TabBarController，直接改 index
+    UIResponder *r = tb;
+    while (r && ![r isKindOfClass:UITabBarController.class]) r = r.nextResponder;
+    if ([r isKindOfClass:UITabBarController.class]) {
+        UITabBarController *tbc = (UITabBarController *)r;
+        if (tbc.selectedIndex != (NSUInteger)idx) tbc.selectedIndex = (NSUInteger)idx;
+    }
+
+    [self updateIndicator:tb animated:YES];
 }
 
 #pragma mark 悬浮位置
@@ -491,50 +509,50 @@ static UITabBarItem *gPollLast = nil;
     UIImage *img = [UIImage imageWithContentsOfFile:path];
     if (!img) return;
 
-    NSArray<UIView *> *btns = WXTabButtons(tb);
+    WXCapsuleBar *cap = objc_getAssociatedObject(tb, kWXCapsuleKey);
+    if (!cap) return;
+    NSArray<UIButton *> *btns = cap.buttons;
     if (btns.count < 4) return;
-    UIView *meBtn = btns.lastObject;   // 微信「我」是第 4 个
 
-    UIImageView *iv = nil;
-    for (UIView *sub in meBtn.subviews) {
-        if ([sub isKindOfClass:UIImageView.class]) { iv = (UIImageView *)sub; break; }
-    }
-    if (!iv) return;
+    UIImage *circle = WXCircularImage(img, 24.0);
+    if (!circle) return;
 
-    UIImage *circle = WXCircularImage(img, 25.0);
-    if (circle && iv.image != circle) {
-        iv.image = circle;
-        iv.contentMode = UIViewContentModeScaleAspectFit;
+    UIButton *me = btns.lastObject;
+    if (me.currentImage != circle) {
+        [me setImage:circle forState:UIControlStateNormal];
     }
 }
 
 + (void)updateIndicator:(UITabBar *)tb animated:(BOOL)animated {
     if (!tb) return;
     WXLiquidIndicatorView *ind = objc_getAssociatedObject(tb, kWXIndKey);
-    if (!ind) return;
+    WXCapsuleBar *cap = objc_getAssociatedObject(tb, kWXCapsuleKey);
+    if (!ind || !cap) return;
 
-    NSArray<UIView *> *btns = WXTabButtons(tb);
+    NSArray<UIButton *> *btns = cap.buttons;
     if (btns.count == 0) return;
 
-    NSInteger sel = 0;
-    UITabBarItem *item = tb.selectedItem;
-    if (item) {
-        NSUInteger i = [tb.items indexOfObject:item];
-        if (i != NSNotFound) sel = (NSInteger)i;
-    }
-    // 优先用 TabBarController 的 selectedIndex（更可靠）
-    UIResponder *r = tb;
-    while (r && ![r isKindOfClass:UITabBarController.class]) r = r.nextResponder;
-    if ([r isKindOfClass:UITabBarController.class]) {
-        sel = (NSInteger)((UITabBarController *)r).selectedIndex;
-    }
+    NSInteger sel = [self selectedIndexFor:tb];
     if (sel < 0 || sel >= (NSInteger)btns.count) sel = 0;
 
-    UIView *btn = btns[sel];
-    CGPoint c = [btn.superview convertPoint:btn.center toView:tb];
-    CGFloat bw = MAX(56.0, btn.bounds.size.width * 0.86);
+    UIButton *btn = btns[sel];
 
-    [ind moveToCenterX:c.x width:bw animated:animated];
+    CGFloat ih = MAX(26.0, cap.bounds.size.height - 8.0);
+    CGFloat iy = (cap.bounds.size.height - ih) / 2.0;
+    CGRect f = ind.frame;
+    if (fabs(f.size.height - ih) > 0.5 || fabs(f.origin.y - iy) > 0.5) {
+        f.size.height = ih;
+        f.origin.y = iy;
+        ind.frame = f;
+        [ind applyStyle];
+    }
+
+    // 用 bounds 直接算位置，不依赖按钮是否已完成布局
+    CGFloat n = (CGFloat)btns.count;
+    CGFloat slot = (cap.bounds.size.width - 8.0) / n;
+    CGFloat cx = 4.0 + slot * ((CGFloat)sel + 0.5);
+    CGFloat bw = MAX(52.0, slot * 0.84);
+    [ind moveToCenterX:cx width:bw animated:animated];
 }
 
 @end
