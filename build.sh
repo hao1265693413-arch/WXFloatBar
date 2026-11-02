@@ -5,7 +5,7 @@ set -euo pipefail
 PROJ="$(cd "$(dirname "$0")" && pwd)"
 OUT="$PROJ/build"
 NAME="WXFloatBar"
-VERSION="1.0.1"
+VERSION="2.0.0"
 
 rm -rf "$OUT"; mkdir -p "$OUT"
 
@@ -13,7 +13,7 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 echo "==> SDK: $SDK"
 
 SRC=("$PROJ/floater/WXGlassView.m"
-     "$PROJ/floater/WXFloatBarManager.m"
+     "$PROJ/floater/WXTabBarStyler.m"
      "$PROJ/floater/WXInjector.m")
 
 COMMON=(-isysroot "$SDK" -miphoneos-version-min=15.0
