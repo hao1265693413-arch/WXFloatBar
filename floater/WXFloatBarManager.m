@@ -219,28 +219,23 @@ static BOOL WXPrefBool(NSString *key, BOOL def) {
     CGPoint touch = [g locationInView:self.bar];
     [self.bar driveLiquidWithPoint:touch];
 
-    switch (g.state) {
-        case UIGestureRecognizerStateBegan:
-            self.dragging = YES;
-            [UIView animateWithDuration:0.16 animations:^{
-                self.bar.transform = CGAffineTransformMakeScale(1.04, 1.04);
-            }];
-            break;
-        case UIGestureRecognizerStateChanged: {
-            // 拖动时轻微倾斜，增加液态手感
-            CGFloat v = [g velocityInView:self.container].x;
-            CGFloat a = MAX(-0.06, MIN(0.06, v / 6000.0));
-            self.bar.transform = CGAffineTransformMakeRotation(a);
-            break;
-        }
-        case UIGestureRecognizerStateEnded:
-        case UIGestureRecognizerStateCancelled: {
-            self.dragging = NO;
-            [UIView animateWithDuration:0.24 animations:^{ self.bar.transform = CGAffineTransformIdentity; }];
-            [self snap:self.bar.frame.origin];
-            break;
-        }
-        default: break;
+    UIGestureRecognizerState st = g.state;
+    if (st == UIGestureRecognizerStateBegan) {
+        self.dragging = YES;
+        [UIView animateWithDuration:0.16 animations:^{
+            self.bar.transform = CGAffineTransformMakeScale(1.04, 1.04);
+        }];
+    } else if (st == UIGestureRecognizerStateChanged) {
+        // 拖动时轻微倾斜，增加液态手感
+        CGFloat v = [g velocityInView:self.container].x;
+        CGFloat a = MAX(-0.06, MIN(0.06, v / 6000.0));
+        self.bar.transform = CGAffineTransformMakeRotation(a);
+    } else if (st == UIGestureRecognizerStateEnded || st == UIGestureRecognizerStateCancelled) {
+        self.dragging = NO;
+        [UIView animateWithDuration:0.24 animations:^{
+            self.bar.transform = CGAffineTransformIdentity;
+        }];
+        [self snap:self.bar.frame.origin];
     }
 }
 
