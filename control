@@ -1,6 +1,6 @@
 Package: com.hao.wxfloatbar
 Name: WXFloatBar
-Version: 1.0.1
+Version: 2.0.0
 Architecture: iphoneos-arm64
 Description: 微信液态玻璃悬浮底栏 · 支持拖拽吸附与天蓝色高光滑动 · 可被 TrollStore 输入器注入
 Maintainer: hao
