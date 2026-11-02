@@ -34,6 +34,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 重新读取设置并刷新外观
 - (void)reloadSettings;
 
+/// 首次挂载成功的提示（也用来确认 dylib 是否被加载）
+- (void)flashConfirmToast;
+
 /// 供输入器进程调用：直接在指定 window 上挂载
 - (void)attachToWindow:(UIWindow *)window;
 
