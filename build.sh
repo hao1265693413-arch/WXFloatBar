@@ -5,7 +5,7 @@ set -euo pipefail
 PROJ="$(cd "$(dirname "$0")" && pwd)"
 OUT="$PROJ/build"
 NAME="WXFloatBar"
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 rm -rf "$OUT"; mkdir -p "$OUT"
 
@@ -22,7 +22,7 @@ COMMON=(-isysroot "$SDK" -miphoneos-version-min=15.0
         -framework UIKit -framework QuartzCore
         -framework CoreGraphics -framework Foundation
         -Wno-deprecated-declarations -Wno-nullability-completeness
-        -install_name /Library/MobileSubstrate/DynamicLibraries/$NAME.dylib)
+        -install_name /usr/lib/TweakInject/$NAME.dylib)
 
 for ARCH in arm64 arm64e; do
   echo "==> 编译 $ARCH"
@@ -34,12 +34,24 @@ echo "==> 合并 fat binary"
 lipo -create "$OUT/$NAME-arm64.dylib" "$OUT/$NAME-arm64e.dylib" -output "$OUT/$NAME.dylib"
 lipo -info "$OUT/$NAME.dylib"
 
+# ad-hoc 签名：arm64e 在真机上需要有效签名才能被注入加载
+echo "==> ad-hoc 签名"
+codesign --force --sign - --timestamp=none "$OUT/$NAME.dylib" && \
+  codesign -dv "$OUT/$NAME.dylib" 2>&1 | head -5 || echo "codesign 跳过"
+
 echo "==> 组织 rootless 包结构"
 PKGROOT="$OUT/pkgroot"
-LIBDIR="$PKGROOT/var/jb/Library/MobileSubstrate/DynamicLibraries"
-mkdir -p "$LIBDIR" "$PKGROOT/DEBIAN"
-cp "$OUT/$NAME.dylib" "$LIBDIR/"
-cp "$PROJ/$NAME.plist" "$LIBDIR/"
+EK_DIR="$PKGROOT/var/jb/usr/lib/TweakInject"
+MS_DIR="$PKGROOT/var/jb/Library/MobileSubstrate/DynamicLibraries"
+mkdir -p "$EK_DIR" "$MS_DIR" "$PKGROOT/DEBIAN"
+
+# 主路径：ElleKit（Dopamine 用这个）
+cp "$OUT/$NAME.dylib" "$EK_DIR/"
+cp "$PROJ/$NAME.plist" "$EK_DIR/"
+
+# 兼容路径：老 Substrate。dylib 内有重复加载检测，不会出现两条胶囊
+cp "$OUT/$NAME.dylib" "$MS_DIR/"
+cp "$PROJ/$NAME.plist" "$MS_DIR/"
 
 echo "==> 打包 deb"
 python3 "$PROJ/pack_deb.py" "$PKGROOT" "$OUT/${NAME}_${VERSION}_iphoneos-arm64.deb" "$VERSION"
