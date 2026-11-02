@@ -131,6 +131,7 @@ static NSArray<UIView *> *WXTabButtons(UITabBar *tb) {
     CGFloat r = self.bounds.size.height / 2.0;
     self.layer.cornerRadius = r;
     self.layer.cornerCurve = kCACornerCurveContinuous;
+    self.backgroundColor = [UIColor colorWithWhite:1 alpha:0.55];
     _blur.frame = self.bounds;
     _blur.layer.cornerRadius = r;
     _blur.layer.cornerCurve = kCACornerCurveContinuous;
@@ -249,7 +250,43 @@ static CGFloat gBottomGap  = 8.0;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{ [self rescan]; });
         }];
+        // 前 40 秒持续维护：微信可能在启动后才创建背景层或底栏
+        __block NSInteger ticks = 0;
+        NSTimer *m = [NSTimer scheduledTimerWithTimeInterval:1.5 repeats:YES block:^(NSTimer *t) {
+            ticks++;
+            [self rescan];
+            if (ticks > 26) [t invalidate];
+        }];
+        [[NSRunLoop mainRunLoop] addTimer:m forMode:NSRunLoopCommonModes];
+
         NSLog(@"[WXFloatBar] tab bar styler installed");
+    });
+}
+
+#pragma mark 选中项轮询
+
+static UITabBar *gPollBar = nil;
+static UITabBarItem *gPollLast = nil;
+
+/// 微信切 tab 不一定走 setSelectedIndex: / setSelectedItem:，
+/// 那两个 hook 可能根本不触发，所以这里用轮询兜底（0.15s 读一次属性，开销可忽略）
++ (void)startSelectionPolling:(UITabBar *)tb {
+    if (!tb) return;
+    gPollBar = tb;
+    gPollLast = tb.selectedItem;
+
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSTimer *t = [NSTimer scheduledTimerWithTimeInterval:0.15 repeats:YES block:^(NSTimer *timer) {
+            UITabBar *bar = gPollBar;
+            if (!bar) return;
+            UITabBarItem *cur = bar.selectedItem;
+            if (cur != gPollLast) {
+                gPollLast = cur;
+                [WXTabBarStyler updateIndicator:bar animated:YES];
+            }
+        }];
+        [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
     });
 }
 
@@ -307,19 +344,35 @@ static CGFloat gBottomGap  = 8.0;
         if (!objc_getAssociatedObject(tb, kWXStyledKey)) {
             objc_setAssociatedObject(tb, kWXStyledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
+            // iOS 15+ 上 backgroundImage / shadowImage 已经失效，
+            // 必须用 UITabBarAppearance 才能真正清掉背景
+            if (@available(iOS 13.0, *)) {
+                UITabBarAppearance *ap = [UITabBarAppearance new];
+                [ap configureWithTransparentBackground];
+                ap.backgroundColor = UIColor.clearColor;
+                ap.backgroundEffect = nil;
+                ap.shadowColor = UIColor.clearColor;
+                ap.shadowImage = [UIImage new];
+                ap.backgroundImage = [UIImage new];
+                tb.standardAppearance = ap;
+                if (@available(iOS 15.0, *)) {
+                    tb.scrollEdgeAppearance = ap;
+                }
+            }
             tb.backgroundImage = [UIImage new];
             tb.shadowImage = [UIImage new];
             tb.backgroundColor = UIColor.clearColor;
             if (!tb.translucent) tb.translucent = YES;
             tb.clipsToBounds = NO;
 
-            WXHideBackgrounds(tb);
-
             tb.opaque = NO;
             tb.layer.backgroundColor = UIColor.clearColor.CGColor;
             tb.layer.cornerRadius = 0;
             tb.layer.masksToBounds = NO;
         }
+
+        // 背景层可能在首次之后才创建，所以每轮都扫一次（隐藏不会触发布局）
+        WXHideBackgrounds(tb);
 
         // ================= 每轮 =================
         // 只做不触发布局的操作：frame 值相同 UIKit 会自己跳过，zPosition 不影响布局
@@ -398,6 +451,9 @@ static CGFloat gBottomGap  = 8.0;
 
         // 头像
         [self applyAvatarTo:tb];
+
+        // 选中项轮询（保证指示器能动）
+        [self startSelectionPolling:tb];
     } @catch (NSException *e) {
         NSLog(@"[WXFloatBar] style error: %@", e);
     }
