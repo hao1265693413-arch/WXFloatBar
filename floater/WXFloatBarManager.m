@@ -84,13 +84,19 @@ static BOOL WXPrefBool(NSString *key, BOOL def) {
 #pragma mark 生命周期
 
 - (UIWindow *)targetWindow {
+    UIWindow *best = nil;
+    CGFloat bestArea = 0;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class]) continue;
         for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-            if (w.isKeyWindow && !w.hidden) return w;
+            if (w.hidden || w.alpha < 0.01) continue;
+            if (w.windowLevel != UIWindowLevelNormal) continue;
+            CGFloat area = w.bounds.size.width * w.bounds.size.height;
+            if (area > bestArea) { bestArea = area; best = w; }
         }
     }
-    return UIApplication.sharedApplication.keyWindow;
+    if (!best) return UIApplication.sharedApplication.keyWindow;
+    return best;
 }
 
 - (void)attachToWindow:(UIWindow *)window {
@@ -299,6 +305,14 @@ static BOOL WXPrefBool(NSString *key, BOOL def) {
     UIViewController *vc = [self targetWindow].rootViewController;
     while (vc.presentedViewController) vc = vc.presentedViewController;
     return vc;
+}
+
+- (void)flashConfirmToast {
+    // 专门用来确认 dylib 是否真的被加载并挂上
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self toast:@"WXFloatBar 已加载 v1.0.1"];
+    });
 }
 
 - (void)toast:(NSString *)t {
