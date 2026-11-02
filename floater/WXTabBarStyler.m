@@ -225,6 +225,16 @@ static CGFloat gBottomGap  = 8.0;
 
 #pragma mark - Styler
 
+@interface WXTabBarStyler ()
++ (CGRect)pillRectFor:(UITabBar *)tb;
++ (void)updateIndicator:(UITabBar *)tb animated:(BOOL)animated;
++ (void)selectIndex:(NSInteger)idx inTabBar:(UITabBar *)tb;
++ (NSInteger)selectedIndexFor:(UITabBar *)tb;
++ (void)applyAvatarTo:(UITabBar *)tb;
++ (void)startSelectionPolling:(UITabBar *)tb;
++ (void)rescanInView:(UIView *)root;
+@end
+
 @implementation WXTabBarStyler
 
 + (void)setFloating:(BOOL)floating        { gFloating = floating; }
