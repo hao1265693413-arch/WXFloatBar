@@ -5,7 +5,7 @@ set -euo pipefail
 PROJ="$(cd "$(dirname "$0")" && pwd)"
 OUT="$PROJ/build"
 NAME="WXFloatBar"
-VERSION="2.1.0"
+VERSION="2.1.1"
 
 rm -rf "$OUT"; mkdir -p "$OUT"
 
