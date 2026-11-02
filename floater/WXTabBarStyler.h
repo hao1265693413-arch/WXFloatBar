@@ -17,6 +17,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 安装 swizzle（幂等，重复调用安全）
 + (void)install;
 
+/// 主动扫描并应用样式（不依赖布局回调，避免死循环）
++ (void)rescan;
+
 /// 外观参数
 + (void)setFloating:(BOOL)floating;
 + (void)setBarHeight:(CGFloat)height;
