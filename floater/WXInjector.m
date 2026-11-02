@@ -1,135 +1,138 @@
 //
 //  WXInjector.m —— 注入入口（rootless deb / TrollStore 输入器通用）
 //
-//  设计要点：
-//  1. constructor 执行时 UIWindow 几乎肯定还不存在，所以「只挂一次」是错的。
-//     这里把「已注入」和「已挂载」拆开，挂载失败就继续重试，直到成功。
-//  2. 除了轮询，还监听 window 变化通知，微信换 window 时能自动重新挂上。
-//  3. 首次挂载成功会弹一个 toast，用来确认 dylib 到底有没有被加载。
+//  只做三件事：
+//   1. 确认自己跑在微信里
+//   2. 安装 TabBar 改造（swizzle，纯 objc runtime，不依赖 substrate）
+//   3. 兜底：如果注入时机晚于微信首次布局，主动触发几次重新布局
 //
 
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
-#import "WXFloatBarManager.h"
+#import "WXTabBarStyler.h"
 
-static BOOL gObserversInstalled = NO;
-static BOOL gAttached = NO;
-static NSInteger gTries = 0;
+static BOOL gInstalled = NO;
+static NSInteger gNudges = 0;
 
-// 前向声明（constructor 里要用到地址做重复加载判断）
 __attribute__((visibility("default"))) void WXFBShow(void);
 __attribute__((visibility("default"))) void WXFBHide(void);
 
-/// 找一个真正用来显示内容的 window
-/// （排除键盘 window、状态栏 window、以及 hidden / level 不为 Normal 的）
-static UIWindow *WXFindWindow(void) {
-    UIWindow *best = nil;
-    CGFloat bestArea = 0;
-
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class]) continue;
-        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-            if (w.hidden) continue;
-            if (w.alpha < 0.01) continue;
-            if (w.windowLevel != UIWindowLevelNormal) continue;
-            CGFloat area = w.bounds.size.width * w.bounds.size.height;
-            if (area > bestArea) { bestArea = area; best = w; }
-        }
-    }
-
-    if (!best) {
-        UIWindow *kw = UIApplication.sharedApplication.keyWindow;
-        if (kw && !kw.hidden && kw.windowLevel == UIWindowLevelNormal) best = kw;
-    }
-    return best;
-}
-
 static BOOL WXIsWeChat(void) {
-    NSString *bundle = [NSBundle mainBundle].bundleIdentifier ?: @"";
-    if ([bundle hasPrefix:@"com.tencent.xin"]) return YES;
-    if ([bundle isEqualToString:@"com.tencent.mm"]) return YES;
+    NSString *b = [NSBundle mainBundle].bundleIdentifier ?: @"";
+    if ([b hasPrefix:@"com.tencent.xin"] || [b isEqualToString:@"com.tencent.mm"]) return YES;
     return [NSProcessInfo.processInfo.environment[@"WXFB_FORCE"] boolValue];
 }
 
-/// 尝试挂载一次。返回是否成功。
-static BOOL WXTryAttach(void) {
-    if (!WXIsWeChat()) return NO;
+static UITabBarController *WXFindTBC(UIViewController *vc);
 
-    UIWindow *w = WXFindWindow();
-    if (!w) return NO;
-
-    WXFloatBarManager *m = [WXFloatBarManager shared];
-    [m attachToWindow:w];
-    [m show];
-
-    if (!gAttached) {
-        gAttached = YES;
-        NSLog(@"[WXFloatBar] attached to window %@", w);
-        [m flashConfirmToast];
+/// 找当前的 UITabBarController（微信根控制器通常是它或它被嵌套）
+static UITabBarController *WXFindTabBarController(void) {
+    UIWindow *win = UIApplication.sharedApplication.keyWindow;
+    if (!win) {
+        for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
+            if (![s isKindOfClass:UIWindowScene.class]) continue;
+            for (UIWindow *w in ((UIWindowScene *)s).windows) {
+                if (!w.hidden && w.windowLevel == UIWindowLevelNormal) { win = w; break; }
+            }
+            if (win) break;
+        }
     }
-    return YES;
+    UIViewController *vc = win.rootViewController;
+    return WXFindTBC(vc);
 }
 
-static void WXStartPolling(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSTimer *t = [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *timer) {
-            gTries++;
-            if (WXTryAttach()) {
-                [timer invalidate];
-                return;
-            }
-            if (gTries > 25) {   // 10 秒还没挂上，放弃轮询，靠通知兜底
-                [timer invalidate];
-                NSLog(@"[WXFloatBar] 轮询超时，仍未找到 window（已尝试 %ld 次）", (long)gTries);
-            }
-        }];
-        [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
-    });
+static UITabBarController *WXFindTBC(UIViewController *vc) {
+    if (!vc) return nil;
+    if ([vc isKindOfClass:UITabBarController.class]) return (UITabBarController *)vc;
+
+    if ([vc isKindOfClass:UINavigationController.class]) {
+        UITabBarController *r = WXFindTBC(((UINavigationController *)vc).viewControllers.firstObject);
+        if (r) return r;
+    }
+    if ([vc isKindOfClass:UITabBarController.class]) return (UITabBarController *)vc;
+
+    for (UIViewController *child in vc.childViewControllers) {
+        UITabBarController *r = WXFindTBC(child);
+        if (r) return r;
+    }
+    UIViewController *p = vc.presentedViewController;
+    if (p) return WXFindTBC(p);
+    return nil;
+}
+
+/// 主动触发一次布局，让 swizzle 有机会跑
+static void WXNudge(void) {
+    UITabBarController *tbc = WXFindTabBarController();
+    if (!tbc) return;
+    [tbc.view setNeedsLayout];
+    [tbc.view layoutIfNeeded];
+    [tbc.tabBar setNeedsLayout];
+    [tbc.tabBar layoutIfNeeded];
+}
+
+/// 加载确认提示（用来判断 dylib 到底有没有被加载）
+static void WXConfirmToast(void) {
+    UIWindow *w = UIApplication.sharedApplication.keyWindow;
+    if (!w) return;
+    UILabel *l = [UILabel new];
+    l.text = @"WXFloatBar 已加载";
+    l.textColor = UIColor.whiteColor;
+    l.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    l.textAlignment = NSTextAlignmentCenter;
+    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.75];
+    l.layer.cornerRadius = 12;
+    l.layer.masksToBounds = YES;
+    l.frame = CGRectMake((w.bounds.size.width - 190) / 2, w.bounds.size.height - 180, 190, 38);
+    l.alpha = 0;
+    [w addSubview:l];
+    [UIView animateWithDuration:0.25 animations:^{ l.alpha = 1; } completion:^(BOOL f) {
+        [UIView animateWithDuration:0.4 delay:1.4 options:0 animations:^{ l.alpha = 0; }
+                         completion:^(BOOL done) { [l removeFromSuperview]; }];
+    }];
 }
 
 __attribute__((constructor)) static void WXFBConstructor(void) {
-    // 防重复加载：如果同符号已由另一个镜像提供，说明加载了两份，直接退出。
-    // （ElleKit 与 Substrate 兼容目录同时被扫描时会出现这种情况）
+    // 防重复加载（ElleKit 与 Substrate 兼容目录同时被扫描时会出现两份）
     void *existing = dlsym(RTLD_DEFAULT, "WXFBShow");
     if (existing && existing != (void *)&WXFBShow) {
-        NSLog(@"[WXFloatBar] duplicate image detected, skipping");
+        NSLog(@"[WXFloatBar] duplicate image, skip");
         return;
     }
 
-    NSLog(@"[WXFloatBar] dylib loaded into %@", [NSBundle mainBundle].bundleIdentifier);
+    NSLog(@"[WXFloatBar] loaded into %@", [NSBundle mainBundle].bundleIdentifier);
+    if (!WXIsWeChat()) return;
 
-    // 立刻试一次（万一 window 已经在了）
-    dispatch_async(dispatch_get_main_queue(), ^{ WXTryAttach(); });
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (gInstalled) return;
+        gInstalled = YES;
 
-    if (gObserversInstalled) return;
-    gObserversInstalled = YES;
+        [WXTabBarStyler install];
+        WXNudge();
+
+        // 注入时机可能晚于微信首次布局，前几秒多推几次
+        NSTimer *t = [NSTimer scheduledTimerWithTimeInterval:0.8 repeats:YES block:^(NSTimer *timer) {
+            gNudges++;
+            WXNudge();
+            if (gNudges == 1) WXConfirmToast();
+            if (gNudges > 6) [timer invalidate];
+        }];
+        [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
+    });
 
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
-
-    // App 启动完成 / 回到前台
-    [nc addObserverForName:UIApplicationDidFinishLaunchingNotification
-                    object:nil queue:[NSOperationQueue mainQueue]
-                usingBlock:^(NSNotification *n) { WXTryAttach(); }];
     [nc addObserverForName:UIApplicationDidBecomeActiveNotification
                     object:nil queue:[NSOperationQueue mainQueue]
-                usingBlock:^(NSNotification *n) { WXTryAttach(); }];
-
-    // window 出现 / 切换（微信会重建 window，必须重新挂，否则胶囊会消失）
+                usingBlock:^(NSNotification *n) { WXNudge(); }];
     [nc addObserverForName:UIWindowDidBecomeKeyNotification
                     object:nil queue:[NSOperationQueue mainQueue]
-                usingBlock:^(NSNotification *n) { WXTryAttach(); }];
-    [nc addObserverForName:UIWindowDidBecomeVisibleNotification
-                    object:nil queue:[NSOperationQueue mainQueue]
-                usingBlock:^(NSNotification *n) { WXTryAttach(); }];
-
-    WXStartPolling();
+                usingBlock:^(NSNotification *n) { WXNudge(); }];
 }
 
-// 供其他 dylib / 输入器通过 dlsym 调用
 __attribute__((visibility("default"))) void WXFBShow(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{ [[WXFloatBarManager shared] show]; });
+    dispatch_async(dispatch_get_main_queue(), ^{ WXNudge(); });
 }
 
 __attribute__((visibility("default"))) void WXFBHide(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{ [[WXFloatBarManager shared] hide]; });
+    // 目前不做隐藏，保留接口供 dlsym 使用
+    NSLog(@"[WXFloatBar] WXFBHide called");
 }
