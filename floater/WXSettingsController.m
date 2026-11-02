@@ -225,6 +225,27 @@ static const void *kWXSwitchBlock  = &kWXSwitchBlock;
     hint.textColor = UIColor.tertiaryLabelColor;
     hint.textAlignment = NSTextAlignmentCenter;
     [self.stack addArrangedSubview:hint];
+
+    // ===== 作者署名 =====
+    UILabel *sign = [UILabel new];
+    sign.text = @"作者：hao";
+    sign.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    sign.textColor = UIColor.secondaryLabelColor;
+    sign.textAlignment = NSTextAlignmentCenter;
+    sign.numberOfLines = 0;
+
+    UILabel *ver = [UILabel new];
+    ver.text = @"WXFloatBar 2.1.1";
+    ver.font = [UIFont systemFontOfSize:11];
+    ver.textColor = UIColor.tertiaryLabelColor;
+    ver.textAlignment = NSTextAlignmentCenter;
+
+    UIStackView *foot = [[UIStackView alloc] initWithArrangedSubviews:@[sign, ver]];
+    foot.axis = UILayoutConstraintAxisVertical;
+    foot.spacing = 3;
+    foot.layoutMargins = UIEdgeInsetsMake(24, 0, 0, 0);
+    foot.layoutMarginsRelativeArrangement = YES;
+    [self.stack addArrangedSubview:foot];
 }
 
 #pragma mark 滑块
@@ -318,6 +339,13 @@ static const void *kWXSwitchBlock  = &kWXSwitchBlock;
     row.alignment = UIStackViewAlignmentCenter;
 
     [self.stack addArrangedSubview:[self cardRow:row]];
+
+    UILabel *tip = [UILabel new];
+    tip.text = @"想用自己的微信头像：在微信里点左上角头像 → 保存到相册，再回来这里选择。";
+    tip.font = [UIFont systemFontOfSize:11.5];
+    tip.textColor = UIColor.tertiaryLabelColor;
+    tip.numberOfLines = 0;
+    [self.stack addArrangedSubview:tip];
 }
 
 - (void)chooseAvatar {
