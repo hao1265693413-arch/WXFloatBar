@@ -362,6 +362,16 @@
 - (void)layoutSubviews {
     [super layoutSubviews];
     _glass.frame = self.bounds;
+
+    // 尺寸变化时按比例重排按钮（胶囊被拉伸/压缩时要跟着变）
+    NSUInteger n = MAX(_btns.count, 1);
+    CGFloat w = (self.bounds.size.width - 8.0) / n;
+    CGFloat h = self.bounds.size.height - 8.0;
+    for (NSUInteger i = 0; i < _btns.count; i++) {
+        UIButton *b = _btns[i];
+        b.frame = CGRectMake(4.0 + w * i, 4.0, w, h);
+        b.layer.cornerRadius = h / 2.0;
+    }
 }
 
 /// 拖动时由管理器驱动液态高光
