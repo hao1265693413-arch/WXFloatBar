@@ -235,7 +235,7 @@ static const void *kWXSwitchBlock  = &kWXSwitchBlock;
     sign.numberOfLines = 0;
 
     UILabel *ver = [UILabel new];
-    ver.text = @"WXFloatBar 2.2.0";
+    ver.text = @"WXFloatBar 2.2.1";
     ver.font = [UIFont systemFontOfSize:11];
     ver.textColor = UIColor.tertiaryLabelColor;
     ver.textAlignment = NSTextAlignmentCenter;
