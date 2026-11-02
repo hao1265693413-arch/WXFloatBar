@@ -454,54 +454,49 @@ static UITabBarItem *gPollLast = nil;
 }
 
 + (void)selectIndex:(NSInteger)idx inTabBar:(UITabBar *)tb {
-    if (!tb || idx < 0 || idx >= (NSInteger)tb.items.count) return;
+    if (!tb || idx < 0) return;
 
-    UITabBarItem *item = tb.items[idx];
+    @try {
+        // 首选：直接触发微信原生按钮的点击事件。
+        // 这是最接近真实点击的路径，不会绕过微信自己的切换逻辑。
+        // 原生按钮只是被隐藏了，仍然在视图层级里，事件照常可发。
+        NSArray<UIView *> *native = WXTabButtons(tb);
+        if (idx < (NSInteger)native.count) {
+            UIView *btn = native[idx];
+            if ([btn isKindOfClass:UIControl.class] && btn.window) {
+                [(UIControl *)btn sendActionsForControlEvents:UIControlEventTouchUpInside];
+                // 延后按真实状态刷新，避免切换失败时指示器"假装"移动
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    [WXTabBarStyler updateIndicator:tb animated:YES];
+                });
+                return;
+            }
+        }
 
-    // 1. 走 delegate（标准 UITabBar 的切页入口）
-    id<UITabBarDelegate> d = tb.delegate;
-    if (d && [d respondsToSelector:@selector(tabBar:didSelectItem:)]) {
-        [d tabBar:tb didSelectItem:item];
+        // 兜底：不调 delegate（微信的 delegate 不是标准实现，硬调会崩）
+        if (idx < (NSInteger)tb.items.count) {
+            UITabBarItem *item = tb.items[idx];
+            if (tb.selectedItem != item) tb.selectedItem = item;
+        }
+
+        UIResponder *r = tb;
+        while (r && ![r isKindOfClass:UITabBarController.class]) r = r.nextResponder;
+        if ([r isKindOfClass:UITabBarController.class]) {
+            UITabBarController *tbc = (UITabBarController *)r;
+            if (tbc.selectedIndex != (NSUInteger)idx && idx < (NSInteger)tbc.viewControllers.count) {
+                tbc.selectedIndex = (NSUInteger)idx;
+            }
+        }
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [WXTabBarStyler updateIndicator:tb animated:YES];
+        });
+    } @catch (NSException *e) {
+        NSLog(@"[WXFloatBar] selectIndex error: %@", e);
     }
-
-    // 2. 同步 selectedItem
-    if (tb.selectedItem != item) tb.selectedItem = item;
-
-    // 3. 如果是标准 TabBarController，直接改 index
-    UIResponder *r = tb;
-    while (r && ![r isKindOfClass:UITabBarController.class]) r = r.nextResponder;
-    if ([r isKindOfClass:UITabBarController.class]) {
-        UITabBarController *tbc = (UITabBarController *)r;
-        if (tbc.selectedIndex != (NSUInteger)idx) tbc.selectedIndex = (NSUInteger)idx;
-    }
-
-    [self updateIndicator:tb animated:YES];
 }
-
-#pragma mark 悬浮位置
-
-/// 计算胶囊在 tab bar 内部的位置（不改变 tab bar 自身的 frame）
-/// 这是关键：绝不能在布局回调里改 tab bar 的 frame，
-/// UITabBarController 每轮布局都会重置它，会形成无限布局循环 -> 主线程卡死。
-+ (CGRect)pillRectFor:(UITabBar *)tb {
-    CGRect b = tb.bounds;
-    if (b.size.width < 100) return CGRectZero;
-
-    CGFloat margin = WXPrefFloat(kWXPrefMargin, 8.0);
-    CGFloat wantH  = WXPrefFloat(kWXPrefHeight, 58.0);
-
-    CGFloat safe = 0;
-    if (@available(iOS 11.0, *)) safe = tb.safeAreaInsets.bottom;
-
-    CGFloat available = b.size.height - safe;
-    CGFloat h = MIN(wantH, available - 4.0);
-    if (h < 30.0) h = MIN(wantH, b.size.height);
-
-    CGFloat w = b.size.width - margin * 2.0;
-    return CGRectMake(margin, 2.0, w, h);
-}
-
-#pragma mark 指示器
 
 + (void)applyAvatarTo:(UITabBar *)tb {
     NSString *path = WXPrefString(kWXPrefAvatar, nil);
